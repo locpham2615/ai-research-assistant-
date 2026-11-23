@@ -1,0 +1,17 @@
+fastapi 
+uvicorn 
+pydantic 
+pydantic-settings 
+httpx 
+tenacity 
+aiosqlite 
+openai 
+qdrant-client
+
+
+
+
+pytest 
+pytest-asyncio 
+ruff 
+mypy

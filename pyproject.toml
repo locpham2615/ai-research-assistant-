@@ -1,0 +1,50 @@
+[project]
+name = "ai-research-assistant"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "TaiLoc2615", email = "longphuong197819792615@gmai.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "aiosqlite>=0.22.1",
+    "fastapi>=0.165.0",
+    "httpx>=0.28.1",
+    "mypy>=2.4.1",
+    "openai>=3.57.0",
+    "pydantic>=2.14.4",
+    "pydantic-settings>=2.16.3",
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.5.0",
+    "qdrant-client>=1.20.0",
+    "ruff>=0.17.6",
+    "tenacity>=9.2.1",
+    "uvicorn>=0.54.0",
+]
+
+[project.scripts]
+ai-research-assistant = "ai_research_assistant:main"
+
+[build-system]
+requires = ["uv_build>=0.13.5,<0.14.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = false
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "gpu: tests requiring a real local GPU inference server",
+]
