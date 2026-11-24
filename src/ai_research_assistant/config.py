@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     qdrant_url: str = "http://localhost:6333"
     qdrant_collection_name: str = "research_papers"
 
+    grobid_url: str = "http://localhost:8070"
+    embedding_model_name: str = "BAAI/bge-small-en-v1.5"
 
 @lru_cache
 def get_settings() -> Settings:
