@@ -2,7 +2,7 @@ import hashlib
 import logging
 import uuid
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from qdrant_client.models import PointStruct
 
@@ -110,6 +110,7 @@ class IngestPipeline:
         # Delete-then-Upsert nếu tài liệu cũ bị cập nhật hoặc chạy lại với force=True
         if existing_by_id is not None:
             self.vector_store.delete_by_doc_id(resolved_doc_id)
+            await self.sqlite_store.delete_chunks_by_doc_id(resolved_doc_id)
 
         await self.sqlite_store.upsert_document(
             doc_id=resolved_doc_id,
@@ -158,25 +159,25 @@ class IngestPipeline:
             )
             vectors = await self.embedder.embed_chunks(chunks)
 
-            # 4. Đẩy vào Qdrant
-            points = [
-                PointStruct(
-                    id=_make_point_id(chunk.doc_id, chunk.chunk_index),
-                    vector=vector,
-                    payload={
-                        "doc_id": chunk.doc_id,
-                        "topic_id": chunk.topic_id,
-                        "title": final_title,
-                        "section": chunk.section,
-                        "chunk_index": chunk.chunk_index,
-                        "text": chunk.text,
-                        "text_hash": chunk.text_hash,
-                    },
-                )
-                for chunk, vector in zip(chunks, vectors, strict=True)
-            ]
-            self.vector_store.upsert_chunks(points)
+            # 4. Đẩy đồng bộ vào Qdrant (Dense) và SQLite FTS5 (BM25)
+            points: list[PointStruct] = []
+            chunk_records: list[dict[str, Any]] = []
+            for chunk, vector in zip(chunks, vectors, strict=True):
+                chunk_id = _make_point_id(chunk.doc_id, chunk.chunk_index)
+                payload: dict[str, Any] = {
+                    "doc_id": chunk.doc_id,
+                    "topic_id": chunk.topic_id,
+                    "title": final_title,
+                    "section": chunk.section,
+                    "chunk_index": chunk.chunk_index,
+                    "text": chunk.text,
+                    "text_hash": chunk.text_hash,
+                }
+                points.append(PointStruct(id=chunk_id, vector=vector, payload=payload))
+                chunk_records.append({"chunk_id": chunk_id, **payload})
 
+            self.vector_store.upsert_chunks(points)
+            await self.sqlite_store.upsert_chunks(chunk_records)
             # 5. Đánh dấu hoàn tất
             await self.sqlite_store.update_document_status(resolved_doc_id, "indexed")
             return IngestResult(

@@ -82,3 +82,10 @@ async def test_ingest_pipeline_idempotency_and_delete_then_upsert(tmp_path: Path
     hits = vs.search([0.0, 1.0, 0.0], limit=5, topic_id="llm_sys")
     assert len(hits) == 1
     assert "Version two" in hits[0]["payload"]["text"]
+
+    # Đồng bộ SQLite FTS5: text cũ bị xóa, text mới tìm được bằng BM25
+    bm25_old = await store.search_bm25("KV cache compression", topic_id="llm_sys")
+    bm25_new = await store.search_bm25("paged attention", topic_id="llm_sys")
+    assert bm25_old == []
+    assert len(bm25_new) == 1
+    assert "Version two" in bm25_new[0]["text"]
