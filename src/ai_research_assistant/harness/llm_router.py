@@ -36,6 +36,8 @@ class TaskType(StrEnum):
     MATRIX_REDUCE = "matrix_reduce"
     DEEP_ANALYSIS = "deep_analysis"
 
+    RAG_ANSWER = "rag_answer"
+
 
 LOCAL_TASKS: frozenset[TaskType] = frozenset(
     {

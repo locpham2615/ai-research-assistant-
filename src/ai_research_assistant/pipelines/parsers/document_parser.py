@@ -3,7 +3,7 @@ import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-import fitz  # type: ignore[import-untyped]
+import pymupdf  # type: ignore[import-untyped]
 import httpx
 
 from ai_research_assistant.pipelines.schemas import ParsedDocument, ParsedSection
@@ -105,7 +105,7 @@ class PyMuPDFParser:
     """Fallback parser dùng PyMuPDF khi GROBID không khả dụng hoặc cho file không chuẩn paper."""
 
     def parse_pdf(self, pdf_path: Path) -> ParsedDocument:
-        doc = fitz.open(pdf_path)
+        doc = pymupdf.open(pdf_path)
         try:
             pages = [page.get_text("text") for page in doc]
         finally:
