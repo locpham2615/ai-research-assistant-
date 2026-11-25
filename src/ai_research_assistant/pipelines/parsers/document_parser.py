@@ -3,8 +3,8 @@ import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-import fitz  # type: ignore[import-untyped]
 import httpx
+import pymupdf  # type: ignore[import-untyped]
 
 from ai_research_assistant.pipelines.schemas import ParsedDocument, ParsedSection
 
@@ -86,30 +86,36 @@ class GrobidParser:
         self.timeout_sec = timeout_sec
 
     async def parse_pdf(self, pdf_path: Path) -> ParsedDocument:
-        url = f"{self.grobid_url}/api/processFulltextDocument"
-        pdf_bytes = pdf_path.read_bytes()
-        files = {"input": (pdf_path.name, pdf_bytes, "application/pdf")}
+        with pymupdf.open(pdf_path) as doc:
+            pages = [
+                str(doc.load_page(i).get_text("text"))
+                for i in range(doc.page_count)
+            ]
 
-        if self._external_client is not None:
-            resp = await self._external_client.post(url, files=files, timeout=self.timeout_sec)
-            resp.raise_for_status()
-            return parse_grobid_tei_xml(resp.text)
+        raw_text = "\n\n".join(pages).strip()
+        # Cắt bỏ phần References ở cuối nếu phát hiện
+        split_match = _REFERENCES_RE.split(raw_text, maxsplit=1)
+        clean_body = split_match[0].strip()
 
-        async with httpx.AsyncClient(timeout=self.timeout_sec) as client:
-            resp = await client.post(url, files=files)
-            resp.raise_for_status()
-            return parse_grobid_tei_xml(resp.text)
+        title = pdf_path.stem
+        sections = [ParsedSection(title="Full Text", content=clean_body)] if clean_body else []
+        return ParsedDocument(
+            title=title,
+            abstract="",
+            sections=sections,
+            full_markdown=_build_markdown(title, "", sections),
+        )
 
 
 class PyMuPDFParser:
     """Fallback parser dùng PyMuPDF khi GROBID không khả dụng hoặc cho file không chuẩn paper."""
 
     def parse_pdf(self, pdf_path: Path) -> ParsedDocument:
-        doc = fitz.open(pdf_path)
-        try:
-            pages = [page.get_text("text") for page in doc]
-        finally:
-            doc.close()
+        with pymupdf.open(pdf_path) as doc:
+            pages = [
+                str(doc.load_page(i).get_text("text"))
+                for i in range(doc.page_count)
+            ]
 
         raw_text = "\n\n".join(pages).strip()
         # Cắt bỏ phần References ở cuối nếu phát hiện

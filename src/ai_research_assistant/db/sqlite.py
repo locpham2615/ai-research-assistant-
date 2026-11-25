@@ -1,4 +1,5 @@
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -52,8 +53,58 @@ CREATE TABLE IF NOT EXISTS api_cache (
     response_json TEXT NOT NULL,
     expires_at REAL NOT NULL
 );
-"""
 
+CREATE TABLE IF NOT EXISTS chunks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chunk_id TEXT UNIQUE NOT NULL,
+    doc_id TEXT NOT NULL,
+    topic_id TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    section TEXT NOT NULL DEFAULT '',
+    chunk_index INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    text_hash TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON chunks(doc_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_topic_id ON chunks(topic_id);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+    title,
+    section,
+    text,
+    content='chunks',
+    content_rowid='id',
+    tokenize='porter unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
+    INSERT INTO chunks_fts(rowid, title, section, text)
+    VALUES (new.id, new.title, new.section, new.text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
+    INSERT INTO chunks_fts(chunks_fts, rowid, title, section, text)
+    VALUES ('delete', old.id, old.title, old.section, old.text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
+    INSERT INTO chunks_fts(chunks_fts, rowid, title, section, text)
+    VALUES ('delete', old.id, old.title, old.section, old.text);
+    INSERT INTO chunks_fts(rowid, title, section, text)
+    VALUES (new.id, new.title, new.section, new.text);
+END;
+"""
+_FTS5_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
+
+
+def build_fts5_query(query: str, max_tokens: int = 24) -> str:
+    """Chuyển chuỗi truy vấn tự do thành biểu thức FTS5 an toàn (OR-joined)."""
+    tokens = _FTS5_TOKEN_RE.findall(query.lower())
+    unique_tokens = list(dict.fromkeys(tokens))[:max_tokens]
+    if not unique_tokens:
+        return ""
+    return " OR ".join(f'"{tok}"' for tok in unique_tokens)
 
 class SQLiteStore:
     def __init__(self, db_path: Path | str) -> None:
@@ -240,3 +291,106 @@ class SQLiteStore:
             )
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
+    
+    # --- Chunks & BM25 (FTS5) ---
+    async def upsert_chunks(self, chunks: list[dict[str, Any]]) -> None:
+        if not chunks:
+            return
+        rows = [
+            (
+                c["chunk_id"],
+                c["doc_id"],
+                c["topic_id"],
+                c.get("title", ""),
+                c.get("section", ""),
+                c["chunk_index"],
+                c["text"],
+                c["text_hash"],
+            )
+            for c in chunks
+        ]
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.executemany(
+                """
+                INSERT INTO chunks (
+                    chunk_id, doc_id, topic_id, title, section,
+                    chunk_index, text, text_hash
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(chunk_id) DO UPDATE SET
+                    doc_id = excluded.doc_id,
+                    topic_id = excluded.topic_id,
+                    title = excluded.title,
+                    section = excluded.section,
+                    chunk_index = excluded.chunk_index,
+                    text = excluded.text,
+                    text_hash = excluded.text_hash
+                """,
+                rows,
+            )
+            await db.commit()
+
+    async def delete_chunks_by_doc_id(self, doc_id: str) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))
+            await db.commit()
+
+    async def search_bm25(
+        self,
+        query: str,
+        topic_id: str | None = None,
+        doc_ids: list[str] | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        fts_query = build_fts5_query(query)
+        if not fts_query or limit <= 0:
+            return []
+        if doc_ids is not None and len(doc_ids) == 0:
+            return []
+
+        clauses = ["chunks_fts MATCH ?"]
+        params: list[Any] = [fts_query]
+
+        if topic_id is not None:
+            clauses.append("c.topic_id = ?")
+            params.append(topic_id)
+
+        if doc_ids is not None:
+            placeholders = ", ".join("?" for _ in doc_ids)
+            clauses.append(f"c.doc_id IN ({placeholders})")
+            params.extend(doc_ids)
+
+        where_sql = " AND ".join(clauses)
+        params.append(limit)
+
+        # Trọng số cột: title=0.5, section=1.5, text=1.0
+        # FTS5 bm25() trả số âm (càng âm càng khớp) -> đảo dấu thành lexical_score dương
+        sql = f"""
+            SELECT
+                c.chunk_id,
+                c.doc_id,
+                c.topic_id,
+                c.title,
+                c.section,
+                c.chunk_index,
+                c.text,
+                bm25(chunks_fts, 0.5, 1.5, 1.0) AS raw_bm25
+            FROM chunks_fts
+            JOIN chunks c ON chunks_fts.rowid = c.id
+            WHERE {where_sql}
+            ORDER BY raw_bm25 ASC
+            LIMIT ?
+        """
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(sql, params)
+            rows = await cursor.fetchall()
+
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            raw_score = float(item.pop("raw_bm25"))
+            item["lexical_score"] = -raw_score
+            results.append(item)
+        return results

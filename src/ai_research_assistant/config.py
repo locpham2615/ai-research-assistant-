@@ -35,6 +35,13 @@ class Settings(BaseSettings):
     grobid_url: str = "http://localhost:8070"
     embedding_model_name: str = "BAAI/bge-small-en-v1.5"
 
+    reranker_model_name: str = "Xenova/ms-marco-MiniLM-L-6-v2"
+    retrieval_top_k: int = 20
+    rerank_top_k: int = 5
+    rerank_min_score: float = 0.0
+    rrf_k: int = 60
+    max_context_chars: int = 7500
+    
 @lru_cache
 def get_settings() -> Settings:
     settings = Settings()

@@ -2,9 +2,11 @@ from typing import Any
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
+    Condition,
     Distance,
     FieldCondition,
     Filter,
+    MatchAny,
     MatchValue,
     PointStruct,
     VectorParams,
@@ -48,13 +50,22 @@ class VectorStore:
         query_vector: list[float],
         limit: int = 5,
         topic_id: str | None = None,
+        doc_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
-        query_filter = None
-        if topic_id:
-            query_filter = Filter(
-                must=[FieldCondition(key="topic_id", match=MatchValue(value=topic_id))]
+        if doc_ids is not None and len(doc_ids) == 0:
+            return []
+
+        conditions: list[Condition] = []
+        if topic_id is not None:
+            conditions.append(
+                FieldCondition(key="topic_id", match=MatchValue(value=topic_id))
+            )
+        if doc_ids is not None:
+            conditions.append(
+                FieldCondition(key="doc_id", match=MatchAny(any=doc_ids))
             )
 
+        query_filter = Filter(must=conditions) if conditions else None
         response = self.client.query_points(
             collection_name=self.collection_name,
             query=query_vector,
@@ -63,8 +74,8 @@ class VectorStore:
         )
         return [
             {
-                "id": point.id,
-                "score": point.score,
+                "id": str(point.id),
+                "score": float(point.score),
                 "payload": point.payload or {},
             }
             for point in response.points
