@@ -43,6 +43,7 @@ LOCAL_TASKS: frozenset[TaskType] = frozenset(
     {
         TaskType.SCREENING,
         TaskType.QUERY_REWRITE,
+        TaskType.RAG_ANSWER,
         TaskType.EXTRACT_CARD,
         TaskType.COMPACTION,
     }
