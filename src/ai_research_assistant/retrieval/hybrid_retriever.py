@@ -133,10 +133,21 @@ class HybridRetriever:
         topic_id: str | None = None,
         doc_ids: list[str] | None = None,
         top_k: int | None = None,
+        rewritten_query: RewrittenQuery | None = None,
     ) -> tuple[list[RetrievedChunk], RetrievalTrace]:
         limit = top_k if top_k is not None else self.retrieval_top_k
+        if not query.strip() or limit <= 0:
+            empty_rewrite = rewritten_query or RewrittenQuery(
+                original_query=query,
+                search_query=query.strip(),
+                bm25_keywords=[],
+                used_fallback=True,
+            )
+            return [], RetrievalTrace(rewritten_query=empty_rewrite)
 
-        if self.query_rewriter is not None:
+        if rewritten_query is not None:
+            rewritten = rewritten_query
+        elif self.query_rewriter is not None:
             rewritten = await self.query_rewriter.rewrite(query)
         else:
             rewritten = RewrittenQuery(
