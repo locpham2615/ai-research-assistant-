@@ -96,7 +96,8 @@ def build_research_graph(
     async def plan_node(state: ResearchAgentState) -> dict[str, Any]:
         start = time.perf_counter()
         query = state.get("query", "")
-        plan = await planner.plan(query)
+        chat_history = state.get("chat_history") or None
+        plan = await planner.plan(query, chat_history=chat_history)
         elapsed_ms = (time.perf_counter() - start) * 1000.0
 
         steps = list(state.get("steps", []))

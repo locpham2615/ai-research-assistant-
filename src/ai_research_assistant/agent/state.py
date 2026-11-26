@@ -1,5 +1,6 @@
 from typing import TypedDict
 
+from ai_research_assistant.agent.memory import ChatTurn
 from ai_research_assistant.agent.schemas import (
     AgentNextAction,
     AgentStepTrace,
@@ -18,6 +19,7 @@ class ResearchAgentState(TypedDict, total=False):
     max_hops: int
     top_k: int
     allow_external_arxiv: bool
+    chat_history: list[ChatTurn]
 
     # Kế hoạch và hàng đợi truy vấn con
     plan: QueryPlan | None
@@ -53,6 +55,7 @@ def create_initial_state(
     max_hops: int = 2,
     top_k: int = 6,
     allow_external_arxiv: bool = False,
+    chat_history: list[ChatTurn] | None = None,
 ) -> ResearchAgentState:
     return ResearchAgentState(
         query=query,
@@ -61,6 +64,7 @@ def create_initial_state(
         max_hops=max(1, max_hops),
         top_k=max(1, top_k),
         allow_external_arxiv=allow_external_arxiv,
+        chat_history=list(chat_history) if chat_history else [],
         plan=None,
         pending_queries=[],
         executed_queries=[],
