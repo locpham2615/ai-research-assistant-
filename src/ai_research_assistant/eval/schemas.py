@@ -92,6 +92,10 @@ class SampleEvalResult(BaseModel):
     invalid_citations_count: int = 0
     latency: StageLatency = Field(default_factory=StageLatency)
     judge: JudgeScores | None = None
+    agent_route: str | None = None
+    agent_hops: int | None = None
+    agent_used_fast_path: bool | None = None
+    agent_llm_calls: int | None = None
 
 class RetrievalMetrics(BaseModel):
     doc_recall_pre_rerank: float = 0.0
@@ -149,6 +153,14 @@ class CategorySummary(BaseModel):
     mrr_post_rerank: float | None = None
 
 
+class AgentEvalSummary(BaseModel):
+    simple_count: int = 0
+    decompose_count: int = 0
+    fast_path_count: int = 0
+    multi_hop_count: int = 0
+    avg_hops: float = 0.0
+    avg_llm_calls: float = 0.0
+
 class EvalReport(BaseModel):
     dataset_name: str
     mode: str
@@ -161,5 +173,7 @@ class EvalReport(BaseModel):
     abstention: AbstentionMetrics
     latency: LatencySummary
     judge: JudgeSummary | None = None
+    agent: AgentEvalSummary | None = None
     by_category: dict[str, CategorySummary] = Field(default_factory=dict)
     results: list[SampleEvalResult] = Field(default_factory=list)
+

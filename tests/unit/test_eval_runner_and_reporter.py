@@ -275,3 +275,112 @@ async def test_runner_isolates_runtime_error_and_reporter_classifies_failures() 
     )
     assert classify_failure(over_filter) == "false_refusal_rerank_over_filter"
     assert "## 5. Failure Analysis" in render_markdown_report([report])
+
+async def test_eval_runner_agentic_mode_and_markdown_summary() -> None:
+    from ai_research_assistant.agent.evidence_pool import EvidencePool
+    from ai_research_assistant.agent.grader import EvidenceGrader
+    from ai_research_assistant.agent.planner import QueryPlanner
+    from ai_research_assistant.agent.research_agent import ResearchAgent
+    from ai_research_assistant.agent.schemas import EvidenceGrade, QueryPlan, SubQuery
+
+    class FakeAgentGuard:
+        async def complete_structured(self, **kwargs: Any) -> Any:
+            model = kwargs["response_model"]
+            if model is QueryPlan:
+                return QueryPlan(
+                    route="decompose",
+                    sub_queries=[
+                        SubQuery(sub_query_id="sq1", search_query="LoRA target matrices"),
+                        SubQuery(sub_query_id="sq2", search_query="QLoRA NF4 layers"),
+                    ],
+                )
+            if model is EvidenceGrade:
+                return EvidenceGrade(is_sufficient=True, rationale="Both papers covered.")
+            if model is RAGAnswerDraft:
+                return RAGAnswerDraft(
+                    answer="LoRA adapts W_q/W_v [1], QLoRA adapts all linear layers [2].",
+                    is_sufficient_evidence=True,
+                )
+            raise AssertionError(f"Unexpected model: {model}")
+
+    class TwoPaperRetriever:
+        async def retrieve(
+            self,
+            query: str,
+            topic_id: str | None = None,
+            doc_ids: list[str] | None = None,
+            top_k: int | None = None,
+            rewritten_query: RewrittenQuery | None = None,
+        ) -> tuple[list[RetrievedChunk], RetrievalTrace]:
+            if "QLoRA" in query:
+                chunk = RetrievedChunk(
+                    chunk_id="c_qlora",
+                    doc_id="arxiv_2305.14314",
+                    topic_id="llm_eval_v1",
+                    title="QLoRA",
+                    section="Method",
+                    chunk_index=0,
+                    text="QLoRA adapts all linear transformer layers using NF4.",
+                    rrf_score=0.03,
+                )
+            else:
+                chunk = RetrievedChunk(
+                    chunk_id="c_lora",
+                    doc_id="arxiv_2106.09685",
+                    topic_id="llm_eval_v1",
+                    title="LoRA",
+                    section="Method",
+                    chunk_index=0,
+                    text="LoRA adapts W_q and W_v attention matrices.",
+                    rrf_score=0.03,
+                )
+            trace = RetrievalTrace(
+                rewritten_query=rewritten_query
+                or RewrittenQuery(original_query=query, search_query=query, bm25_keywords=[]),
+                dense_candidates=1,
+                bm25_candidates=1,
+                fused_candidates=1,
+            )
+            return [chunk], trace
+
+    guard = FakeAgentGuard()
+    reranker = CrossEncoderReranker(
+        top_k=6,
+        min_score=-3.0,
+        score_fn=lambda q, docs: [4.0 for _ in docs],
+    )
+    agent = ResearchAgent(
+        planner=QueryPlanner(schema_guard=guard),  # type: ignore[arg-type]
+        evidence_pool=EvidencePool(retriever=TwoPaperRetriever(), reranker=reranker),
+        grader=EvidenceGrader(schema_guard=guard),  # type: ignore[arg-type]
+        schema_guard=guard,  # type: ignore[arg-type]
+    )
+    runner = EvalRunner(mode="agentic_rag", agent=agent, retrieval_top_k=10, rerank_top_k=6)
+    dataset = EvalDataset(
+        dataset_name="agentic_mini",
+        topic_id="llm_eval_v1",
+        samples=[
+            EvalSample(
+                sample_id="q044",
+                question="Compare LoRA and QLoRA target layers",
+                topic_id="llm_eval_v1",
+                category="multi_paper",
+                should_abstain=False,
+                expected_doc_ids=["arxiv_2106.09685", "arxiv_2305.14314"],
+                expected_evidence_keywords=["attention matrices", "linear transformer"],
+                reference_answer="LoRA adapts W_q/W_v while QLoRA adapts all linear layers.",
+                evidence_quote="attention matrices || linear transformer",
+            )
+        ],
+    )
+
+    report = await runner.run(dataset)
+    assert report.retrieval.doc_recall_post_rerank == 1.0
+    assert report.retrieval.evidence_hit_post_rerank == 1.0
+    assert report.agent is not None
+    assert report.agent.decompose_count == 1
+    assert report.agent.avg_hops == 1.0
+
+    md = render_markdown_report([report])
+    assert "## Agentic Workflow Summary" in md
+    assert "`agentic_rag`" in md

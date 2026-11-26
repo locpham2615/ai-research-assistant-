@@ -23,7 +23,12 @@ from ai_research_assistant.pipelines.embedders.text_embedder import TextEmbedder
 from ai_research_assistant.pipelines.ingest_pipeline import IngestPipeline
 from ai_research_assistant.pipelines.parsers.document_parser import DocumentParser
 
-ALL_MODES: tuple[EvalMode, ...] = ("dense_only", "hybrid_rrf", "full_rag")
+ALL_MODES: tuple[EvalMode, ...] = (
+    "dense_only",
+    "hybrid_rrf",
+    "full_rag",
+    "agentic_rag",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -38,7 +43,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mode",
-        choices=["dense_only", "hybrid_rrf", "full_rag", "all"],
+        choices=["dense_only", "hybrid_rrf", "full_rag", "agentic_rag", "all"],
         default="full_rag",
         help="Ablation mode to execute.",
     )
@@ -82,6 +87,12 @@ def parse_args() -> argparse.Namespace:
         help="Optional override for CrossEncoderReranker min_score threshold.",
     )
     parser.add_argument(
+        "--max-hops",
+        type=int,
+        default=None,
+        help="Optional override for Agentic RAG max_hops budget.",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path("reports"),
@@ -97,6 +108,8 @@ def _resolve_modes(mode_arg: str) -> list[EvalMode]:
         return ["dense_only"]
     if mode_arg == "hybrid_rrf":
         return ["hybrid_rrf"]
+    if mode_arg == "agentic_rag":
+        return ["agentic_rag"]
     return ["full_rag"]
 
 
@@ -109,10 +122,14 @@ def _format_progress(idx: int, total: int, result: SampleEvalResult) -> str:
         else "n/a"
     )
     mrr = f"{result.mrr_post_rerank:.2f}" if result.mrr_post_rerank is not None else "n/a"
+    agent_info = ""
+    if result.agent_route is not None and result.agent_hops is not None:
+        fp = ",fp" if result.agent_used_fast_path else ""
+        agent_info = f" | {result.agent_route}/{result.agent_hops}h{fp}"
     return (
         f"  [{idx:02d}/{total:02d}] {result.sample_id} ({result.category:<16}) | "
         f"grounded={str(result.is_grounded):<5} | rec={rec} | mrr={mrr} | "
-        f"{result.latency.total_ms:6.0f}ms | {status}"
+        f"{result.latency.total_ms:6.0f}ms{agent_info} | {status}"
     )
 
 
@@ -216,14 +233,18 @@ async def run_async(args: argparse.Namespace) -> int:
         if args.rerank_min_score is not None
         else settings.rerank_min_score
     )
+    max_hops = (
+        args.max_hops if args.max_hops is not None else settings.agent_max_hops
+    )
     modes = _resolve_modes(args.mode)
     timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     reports: list[EvalReport] = []
 
     for mode in modes:
+        extra = f", max_hops={max_hops}" if mode == "agentic_rag" else ""
         print(
             f"\n=== RUNNING MODE: {mode} "
-            f"(judge={'on' if judge else 'off'}, min_score={min_score}) ==="
+            f"(judge={'on' if judge else 'off'}, min_score={min_score}{extra}) ==="
         )
         runner = EvalRunner.from_components(
             mode=mode,
@@ -238,6 +259,11 @@ async def run_async(args: argparse.Namespace) -> int:
             rrf_k=settings.rrf_k,
             max_context_chars=settings.max_context_chars,
             judge=judge,
+            agent_max_hops=max_hops,
+            agent_max_sub_queries=settings.agent_max_sub_queries,
+            agent_fast_path_min_score=settings.agent_fast_path_min_score,
+            agent_fast_path_min_chunks=settings.agent_fast_path_min_chunks,
+            agent_merged_top_k=settings.agent_merged_top_k,
         )
         report = await runner.run(
             dataset=dataset,

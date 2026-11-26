@@ -4,6 +4,7 @@ import time
 from collections.abc import Callable
 from typing import Literal, Protocol
 
+from ai_research_assistant.agent.research_agent import ResearchAgent
 from ai_research_assistant.db.sqlite import SQLiteStore
 from ai_research_assistant.db.vector_store import VectorStore
 from ai_research_assistant.eval.judge import RAGJudge
@@ -28,6 +29,7 @@ from ai_research_assistant.retrieval.hybrid_retriever import HybridRetriever
 from ai_research_assistant.retrieval.query_rewriter import QueryRewriter
 from ai_research_assistant.retrieval.reranker import CrossEncoderReranker
 from ai_research_assistant.retrieval.schemas import (
+    GroundedAnswer,
     RetrievalTrace,
     RetrievedChunk,
     RewrittenQuery,
@@ -35,7 +37,7 @@ from ai_research_assistant.retrieval.schemas import (
 
 logger = logging.getLogger(__name__)
 
-EvalMode = Literal["dense_only", "hybrid_rrf", "full_rag"]
+EvalMode = Literal["dense_only", "hybrid_rrf", "full_rag", "agentic_rag"]
 ProgressCallback = Callable[[int, int, SampleEvalResult], None]
 
 
@@ -213,26 +215,37 @@ class EvalRunner:
     def __init__(
         self,
         mode: EvalMode,
-        retriever: RetrieverProtocol,
-        reranker: RerankerProtocol,
-        schema_guard: SchemaGuard,
+        retriever: RetrieverProtocol | None = None,
+        reranker: RerankerProtocol | None = None,
+        schema_guard: SchemaGuard | None = None,
         judge: RAGJudge | None = None,
         retrieval_top_k: int = 20,
         rerank_top_k: int = 5,
         max_context_chars: int = 7500,
+        agent: ResearchAgent | None = None,
     ) -> None:
         self.mode = mode
-        self._retriever = _InstrumentedRetriever(retriever)
-        self._reranker = _InstrumentedReranker(reranker)
-        self.rag = CitationGroundedRAG(
-            retriever=self._retriever,  # type: ignore[arg-type]
-            reranker=self._reranker,  # type: ignore[arg-type]
-            schema_guard=schema_guard,
-            max_context_chars=max_context_chars,
-        )
         self.judge = judge
         self.retrieval_top_k = retrieval_top_k
         self.rerank_top_k = rerank_top_k
+        self.agent = agent
+        self._retriever: _InstrumentedRetriever | None = None
+        self._reranker: _InstrumentedReranker | None = None
+        self.rag: CitationGroundedRAG | None = None
+
+        if agent is None:
+            if retriever is None or reranker is None or schema_guard is None:
+                raise ValueError(
+                    "retriever, reranker, and schema_guard are required when agent is None"
+                )
+            self._retriever = _InstrumentedRetriever(retriever)
+            self._reranker = _InstrumentedReranker(reranker)
+            self.rag = CitationGroundedRAG(
+                retriever=self._retriever,  # type: ignore[arg-type]
+                reranker=self._reranker,  # type: ignore[arg-type]
+                schema_guard=schema_guard,
+                max_context_chars=max_context_chars,
+            )
 
     @classmethod
     def from_components(
@@ -245,12 +258,44 @@ class EvalRunner:
         reranker_model_name: str = "Xenova/ms-marco-MiniLM-L-6-v2",
         retrieval_top_k: int = 20,
         rerank_top_k: int = 5,
-        rerank_min_score: float = 0.0,
+        rerank_min_score: float = -3.0,
         rrf_k: int = 60,
         max_context_chars: int = 7500,
         judge: RAGJudge | None = None,
+        agent_max_hops: int = 2,
+        agent_max_sub_queries: int = 3,
+        agent_fast_path_min_score: float = 2.0,
+        agent_fast_path_min_chunks: int = 2,
+        agent_merged_top_k: int = 6,
     ) -> "EvalRunner":
         """Khởi tạo EvalRunner tương ứng với từng cấu hình Ablation."""
+        if mode == "agentic_rag":
+            agent = ResearchAgent.from_components(
+                embedder=embedder,
+                vector_store=vector_store,
+                sqlite_store=sqlite_store,
+                schema_guard=schema_guard,
+                reranker_model_name=reranker_model_name,
+                retrieval_top_k=retrieval_top_k,
+                rerank_min_score=rerank_min_score,
+                rrf_k=rrf_k,
+                max_hops=agent_max_hops,
+                max_sub_queries=agent_max_sub_queries,
+                fast_path_min_score=agent_fast_path_min_score,
+                fast_path_min_chunks=agent_fast_path_min_chunks,
+                merged_top_k=agent_merged_top_k,
+                max_context_chars=max_context_chars,
+                allow_external_arxiv=False,
+            )
+            return cls(
+                mode=mode,
+                agent=agent,
+                judge=judge,
+                retrieval_top_k=retrieval_top_k,
+                rerank_top_k=agent_merged_top_k,
+                max_context_chars=max_context_chars,
+            )
+
         retriever: RetrieverProtocol
         reranker: RerankerProtocol
 
@@ -297,7 +342,153 @@ class EvalRunner:
             max_context_chars=max_context_chars,
         )
 
+    def _compute_retrieval_scores(
+        self,
+        sample: EvalSample,
+        pre_chunks: list[RetrievedChunk],
+        post_chunks: list[RetrievedChunk],
+    ) -> tuple[
+        float | None,
+        float | None,
+        float | None,
+        float | None,
+        float | None,
+        float | None,
+    ]:
+        if sample.should_abstain:
+            return None, None, None, None, None, None
+
+        return (
+            compute_doc_recall_at_k(
+                pre_chunks,
+                sample.expected_doc_ids,
+                k=self.retrieval_top_k,
+            ),
+            compute_doc_recall_at_k(
+                post_chunks,
+                sample.expected_doc_ids,
+                k=self.rerank_top_k,
+            ),
+            compute_evidence_hit_at_k(
+                pre_chunks,
+                sample.expected_doc_ids,
+                sample.expected_evidence_keywords,
+                k=self.retrieval_top_k,
+            ),
+            compute_evidence_hit_at_k(
+                post_chunks,
+                sample.expected_doc_ids,
+                sample.expected_evidence_keywords,
+                k=self.rerank_top_k,
+            ),
+            compute_mrr_at_k(
+                post_chunks,
+                sample.expected_doc_ids,
+                sample.expected_evidence_keywords,
+                k=self.rerank_top_k,
+            ),
+            compute_ndcg_at_k(
+                post_chunks,
+                sample.expected_doc_ids,
+                sample.expected_evidence_keywords,
+                k=self.rerank_top_k,
+            ),
+        )
+
+    async def _evaluate_agentic_sample(self, sample: EvalSample) -> SampleEvalResult:
+        assert self.agent is not None
+        total_start = time.perf_counter()
+        try:
+            agentic = await self.agent.answer(
+                query=sample.question,
+                topic_id=sample.topic_id,
+                top_k=self.rerank_top_k,
+                allow_external_arxiv=False,
+            )
+        except Exception as exc:
+            total_ms = (time.perf_counter() - total_start) * 1000.0
+            logger.warning(
+                "EvalRunner (agentic) failed on %s (%s): %s",
+                sample.sample_id,
+                type(exc).__name__,
+                exc,
+            )
+            return SampleEvalResult(
+                sample_id=sample.sample_id,
+                category=sample.category,
+                should_abstain=sample.should_abstain,
+                is_grounded=False,
+                abstain_reason=f"runtime_error:{type(exc).__name__}",
+                latency=StageLatency(total_ms=total_ms),
+            )
+
+        total_ms = (time.perf_counter() - total_start) * 1000.0
+        steps = agentic.agent_trace.steps
+        # plan + retrieve(+rerank) vào retrieve_ms; grade vào rerank_ms; synthesize vào generate_ms
+        retrieve_ms = sum(
+            s.latency_ms for s in steps if s.node in {"plan", "retrieve", "arxiv_discovery"}
+        )
+        rerank_ms = sum(s.latency_ms for s in steps if s.node == "grade")
+        generate_ms = sum(s.latency_ms for s in steps if s.node == "synthesize")
+
+        grounded: GroundedAnswer = agentic.grounded_answer
+        pre_chunks = agentic.pre_rerank_chunks
+        post_chunks = (
+            grounded.retrieval_trace.reranked_chunks
+            if grounded.retrieval_trace is not None
+            else []
+        )
+        (
+            doc_recall_pre,
+            doc_recall_post,
+            evidence_pre,
+            evidence_post,
+            mrr_post,
+            ndcg_post,
+        ) = self._compute_retrieval_scores(sample, pre_chunks, post_chunks)
+
+        judge_scores = (
+            await self.judge.evaluate(sample, grounded)
+            if self.judge is not None
+            else None
+        )
+
+        return SampleEvalResult(
+            sample_id=sample.sample_id,
+            category=sample.category,
+            should_abstain=sample.should_abstain,
+            is_grounded=grounded.is_grounded,
+            abstain_reason=grounded.abstain_reason,
+            answer=grounded.answer,
+            doc_recall_pre_rerank=doc_recall_pre,
+            doc_recall_post_rerank=doc_recall_post,
+            evidence_hit_pre_rerank=evidence_pre,
+            evidence_hit_post_rerank=evidence_post,
+            mrr_post_rerank=mrr_post,
+            ndcg_post_rerank=ndcg_post,
+            has_valid_citation=len(grounded.citations) > 0,
+            invalid_citations_count=len(grounded.invalid_citations_removed),
+            latency=StageLatency(
+                retrieve_ms=retrieve_ms,
+                rerank_ms=rerank_ms,
+                generate_ms=generate_ms,
+                total_ms=total_ms,
+            ),
+            judge=judge_scores,
+            agent_route=agentic.agent_trace.route,
+            agent_hops=agentic.agent_trace.hops_executed,
+            agent_used_fast_path=agentic.agent_trace.used_fast_path,
+            agent_llm_calls=agentic.agent_trace.llm_calls,
+        )
+
     async def evaluate_sample(self, sample: EvalSample) -> SampleEvalResult:
+        if self.agent is not None:
+            return await self._evaluate_agentic_sample(sample)
+
+        assert self._retriever is not None
+        assert self._reranker is not None
+        assert self.rag is not None
+
         self._retriever.last_chunks = []
         self._retriever.last_ms = 0.0
         self._reranker.last_chunks = []
@@ -343,50 +534,18 @@ class EvalRunner:
             else 0.0
         )
 
-        doc_recall_pre: float | None = None
-        doc_recall_post: float | None = None
-        evidence_pre: float | None = None
-        evidence_post: float | None = None
-        mrr_post: float | None = None
-        ndcg_post: float | None = None
-
-        if not sample.should_abstain:
-            pre_chunks = self._retriever.last_chunks
-            post_chunks = self._reranker.last_chunks
-            doc_recall_pre = compute_doc_recall_at_k(
-                pre_chunks,
-                sample.expected_doc_ids,
-                k=self.retrieval_top_k,
-            )
-            doc_recall_post = compute_doc_recall_at_k(
-                post_chunks,
-                sample.expected_doc_ids,
-                k=self.rerank_top_k,
-            )
-            evidence_pre = compute_evidence_hit_at_k(
-                pre_chunks,
-                sample.expected_doc_ids,
-                sample.expected_evidence_keywords,
-                k=self.retrieval_top_k,
-            )
-            evidence_post = compute_evidence_hit_at_k(
-                post_chunks,
-                sample.expected_doc_ids,
-                sample.expected_evidence_keywords,
-                k=self.rerank_top_k,
-            )
-            mrr_post = compute_mrr_at_k(
-                post_chunks,
-                sample.expected_doc_ids,
-                sample.expected_evidence_keywords,
-                k=self.rerank_top_k,
-            )
-            ndcg_post = compute_ndcg_at_k(
-                post_chunks,
-                sample.expected_doc_ids,
-                sample.expected_evidence_keywords,
-                k=self.rerank_top_k,
-            )
+        (
+            doc_recall_pre,
+            doc_recall_post,
+            evidence_pre,
+            evidence_post,
+            mrr_post,
+            ndcg_post,
+        ) = self._compute_retrieval_scores(
+            sample,
+            self._retriever.last_chunks,
+            self._reranker.last_chunks,
+        )
 
         judge_scores = (
             await self.judge.evaluate(sample, grounded)
