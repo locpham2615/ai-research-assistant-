@@ -725,3 +725,46 @@ class SQLiteStore:
             limit=max_turns * 2,
         )
         return [ChatTurn(role=m.role, content=m.content) for m in messages]
+    
+    async def list_topics(self) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT
+                    t.id,
+                    t.name,
+                    t.description,
+                    t.created_at,
+                    COUNT(d.id) AS document_count
+                FROM topics t
+                LEFT JOIN documents d ON d.topic_id = t.id
+                GROUP BY t.id
+                ORDER BY t.created_at DESC
+                """
+            )
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def list_all_documents(self, limit: int = 200) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM documents ORDER BY updated_at DESC LIMIT ?",
+                (limit,),
+            )
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def count_topics_and_documents(self) -> tuple[int, int]:
+        async with aiosqlite.connect(self.db_path) as db:
+            cur_t = await db.execute("SELECT COUNT(*) FROM topics")
+            cur_d = await db.execute("SELECT COUNT(*) FROM documents")
+            row_t = await cur_t.fetchone()
+            row_d = await cur_d.fetchone()
+            return (
+                int(row_t[0]) if row_t else 0,
+                int(row_d[0]) if row_d else 0,
+            )

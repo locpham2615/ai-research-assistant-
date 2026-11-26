@@ -1,3 +1,6 @@
+from collections.abc import AsyncIterator
+from typing import Any
+
 from ai_research_assistant.agent.arxiv_tool import ArxivDiscoveryTool
 from ai_research_assistant.agent.evidence_pool import (
     EvidencePool,
@@ -12,9 +15,10 @@ from ai_research_assistant.agent.schemas import (
     AgentExecutionTrace,
     AgenticAnswer,
     AgentRoute,
+    AgentStepTrace,
     QueryPlan,
 )
-from ai_research_assistant.agent.state import create_initial_state
+from ai_research_assistant.agent.state import ResearchAgentState, create_initial_state
 from ai_research_assistant.db.sqlite import SQLiteStore
 from ai_research_assistant.db.vector_store import VectorStore
 from ai_research_assistant.harness.schema_guard import SchemaGuard
@@ -121,7 +125,7 @@ class ResearchAgent:
             allow_external_arxiv=allow_external_arxiv,
         )
 
-    async def answer(
+    def _build_initial_state(
         self,
         query: str,
         topic_id: str | None = None,
@@ -130,8 +134,8 @@ class ResearchAgent:
         max_hops: int | None = None,
         allow_external_arxiv: bool | None = None,
         chat_history: list[ChatTurn] | None = None,
-    ) -> AgenticAnswer:
-        state = create_initial_state(
+    ) -> ResearchAgentState:
+        return create_initial_state(
             query=query,
             topic_id=topic_id,
             doc_ids=doc_ids,
@@ -144,8 +148,9 @@ class ResearchAgent:
             ),
             chat_history=chat_history,
         )
-        final_state = await self._graph.ainvoke(state)
 
+    @staticmethod
+    def _build_agentic_answer(query: str, final_state: dict[str, Any]) -> AgenticAnswer:
         grounded: GroundedAnswer | None = final_state.get("grounded_answer")
         if grounded is None:
             grounded = GroundedAnswer(
@@ -173,3 +178,71 @@ class ResearchAgent:
             agent_trace=trace,
             pre_rerank_chunks=list(final_state.get("pre_rerank_chunks", [])),
         )
+
+    async def answer(
+        self,
+        query: str,
+        topic_id: str | None = None,
+        doc_ids: list[str] | None = None,
+        top_k: int | None = None,
+        max_hops: int | None = None,
+        allow_external_arxiv: bool | None = None,
+        chat_history: list[ChatTurn] | None = None,
+    ) -> AgenticAnswer:
+        state = self._build_initial_state(
+            query=query,
+            topic_id=topic_id,
+            doc_ids=doc_ids,
+            top_k=top_k,
+            max_hops=max_hops,
+            allow_external_arxiv=allow_external_arxiv,
+            chat_history=chat_history,
+        )
+        final_state = await self._graph.ainvoke(state)
+        return self._build_agentic_answer(query, dict(final_state))
+
+    async def stream_answer(
+        self,
+        query: str,
+        topic_id: str | None = None,
+        doc_ids: list[str] | None = None,
+        top_k: int | None = None,
+        max_hops: int | None = None,
+        allow_external_arxiv: bool | None = None,
+        chat_history: list[ChatTurn] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """
+        Stream từng bước hoàn thành của LangGraph cho SSE:
+        - {"type": "step", "step": AgentStepTrace}
+        - {"type": "final", "result": AgenticAnswer}
+        """
+        state = self._build_initial_state(
+            query=query,
+            topic_id=topic_id,
+            doc_ids=doc_ids,
+            top_k=top_k,
+            max_hops=max_hops,
+            allow_external_arxiv=allow_external_arxiv,
+            chat_history=chat_history,
+        )
+        merged_state: dict[str, Any] = dict(state)
+        emitted_steps = 0
+
+        async for chunk in self._graph.astream(state, stream_mode="updates"):
+            if not isinstance(chunk, dict):
+                continue
+            for node_update in chunk.values():
+                if not isinstance(node_update, dict):
+                    continue
+                merged_state.update(node_update)
+                steps = merged_state.get("steps", [])
+                if isinstance(steps, list) and len(steps) > emitted_steps:
+                    for step in steps[emitted_steps:]:
+                        if isinstance(step, AgentStepTrace):
+                            yield {"type": "step", "step": step}
+                    emitted_steps = len(steps)
+
+        yield {
+            "type": "final",
+            "result": self._build_agentic_answer(query, merged_state),
+        }

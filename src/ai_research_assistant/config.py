@@ -54,7 +54,15 @@ class Settings(BaseSettings):
     
     chat_history_max_turns: int = 4
     chat_history_max_chars: int = 1500
-    
+
+    # FastAPI & Uploads
+    api_cors_origins: list[str] = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
+    upload_dir: Path = Path("data/uploads")
+    arxiv_download_dir: Path = Path("data/pdfs")
+
 @lru_cache
 def get_settings() -> Settings:
     settings = Settings()
