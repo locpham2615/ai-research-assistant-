@@ -38,9 +38,12 @@ class Settings(BaseSettings):
     reranker_model_name: str = "Xenova/ms-marco-MiniLM-L-6-v2"
     retrieval_top_k: int = 20
     rerank_top_k: int = 5
-    rerank_min_score: float = 0.0
+    rerank_min_score: float = -3.0
     rrf_k: int = 60
     max_context_chars: int = 7500
+
+    eval_judge_use_cloud: bool = False
+    eval_judge_max_evidence_chars: int = 4000
     
 @lru_cache
 def get_settings() -> Settings:

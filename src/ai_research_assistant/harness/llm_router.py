@@ -37,7 +37,7 @@ class TaskType(StrEnum):
     DEEP_ANALYSIS = "deep_analysis"
 
     RAG_ANSWER = "rag_answer"
-
+    EVAL_JUDGE = "eval_judge"
 
 LOCAL_TASKS: frozenset[TaskType] = frozenset(
     {
@@ -46,6 +46,7 @@ LOCAL_TASKS: frozenset[TaskType] = frozenset(
         TaskType.RAG_ANSWER,
         TaskType.EXTRACT_CARD,
         TaskType.COMPACTION,
+
     }
 )
 
@@ -80,7 +81,11 @@ class LLMRouter:
         self._local_semaphore = asyncio.Semaphore(local_concurrency)
 
     def _resolve_provider(self, task_type: TaskType) -> Literal["local", "cloud"]:
-        return "local" if task_type in LOCAL_TASKS else "cloud"
+        if task_type == TaskType.EVAL_JUDGE:
+            return "cloud" if self.settings.eval_judge_use_cloud else "local"
+        if task_type in LOCAL_TASKS:
+            return "local"
+        return "cloud"
 
     async def _call_local(
         self,
