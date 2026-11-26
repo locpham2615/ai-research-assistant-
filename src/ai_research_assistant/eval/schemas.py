@@ -92,3 +92,74 @@ class SampleEvalResult(BaseModel):
     invalid_citations_count: int = 0
     latency: StageLatency = Field(default_factory=StageLatency)
     judge: JudgeScores | None = None
+
+class RetrievalMetrics(BaseModel):
+    doc_recall_pre_rerank: float = 0.0
+    doc_recall_post_rerank: float = 0.0
+    evidence_hit_pre_rerank: float = 0.0
+    evidence_hit_post_rerank: float = 0.0
+    mrr_post_rerank: float = 0.0
+    ndcg_post_rerank: float = 0.0
+
+
+class CitationMetrics(BaseModel):
+    grounded_answer_rate: float = 0.0
+    valid_citation_rate: float = 0.0
+    hallucinated_citation_rate: float = 0.0
+    total_invalid_citations: int = 0
+
+
+class AbstentionMetrics(BaseModel):
+    true_positives: int = 0
+    false_positives: int = 0
+    true_negatives: int = 0
+    false_negatives: int = 0
+    precision: float = 0.0
+    recall: float = 0.0
+    f1: float = 0.0
+    false_refusal_rate: float = 0.0
+    unanswerable_leak_rate: float = 0.0
+
+
+class LatencyPercentile(BaseModel):
+    mean_ms: float = 0.0
+    p50_ms: float = 0.0
+    p95_ms: float = 0.0
+
+
+class LatencySummary(BaseModel):
+    retrieve: LatencyPercentile = Field(default_factory=LatencyPercentile)
+    rerank: LatencyPercentile = Field(default_factory=LatencyPercentile)
+    generate: LatencyPercentile = Field(default_factory=LatencyPercentile)
+    total: LatencyPercentile = Field(default_factory=LatencyPercentile)
+
+
+class JudgeSummary(BaseModel):
+    evaluated_count: int = 0
+    mean_faithfulness: float = 0.0
+    mean_correctness: float = 0.0
+    mean_relevancy: float = 0.0
+
+
+class CategorySummary(BaseModel):
+    count: int = 0
+    grounded_rate: float = 0.0
+    doc_recall_post_rerank: float | None = None
+    evidence_hit_post_rerank: float | None = None
+    mrr_post_rerank: float | None = None
+
+
+class EvalReport(BaseModel):
+    dataset_name: str
+    mode: str
+    created_at: str
+    total_samples: int
+    answerable_samples: int
+    unanswerable_samples: int
+    retrieval: RetrievalMetrics
+    citation: CitationMetrics
+    abstention: AbstentionMetrics
+    latency: LatencySummary
+    judge: JudgeSummary | None = None
+    by_category: dict[str, CategorySummary] = Field(default_factory=dict)
+    results: list[SampleEvalResult] = Field(default_factory=list)
