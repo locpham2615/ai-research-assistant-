@@ -6,6 +6,7 @@ from ai_research_assistant.agent.evidence_pool import (
 )
 from ai_research_assistant.agent.grader import EvidenceGrader
 from ai_research_assistant.agent.graph import build_research_graph
+from ai_research_assistant.agent.memory import ChatTurn
 from ai_research_assistant.agent.planner import QueryPlanner
 from ai_research_assistant.agent.schemas import (
     AgentExecutionTrace,
@@ -69,12 +70,14 @@ class ResearchAgent:
         rrf_k: int = 60,
         max_hops: int = 2,
         max_sub_queries: int = 3,
-        fast_path_min_score: float = 2.0,
+        fast_path_min_score: float = 1.0,
         fast_path_min_chunks: int = 2,
         merged_top_k: int = 6,
         max_context_chars: int = 7500,
         allow_external_arxiv: bool = False,
         arxiv_tool: ArxivDiscoveryTool | None = None,
+        chat_history_max_turns: int = 4,
+        chat_history_max_chars: int = 1500,
     ) -> "ResearchAgent":
         retriever: SubQueryRetrieverProtocol = HybridRetriever(
             embedder=embedder,
@@ -92,6 +95,8 @@ class ResearchAgent:
         planner = QueryPlanner(
             schema_guard=schema_guard,
             max_sub_queries=max_sub_queries,
+            max_history_turns=chat_history_max_turns,
+            max_history_chars=chat_history_max_chars,
         )
         pool = EvidencePool(
             retriever=retriever,
@@ -124,6 +129,7 @@ class ResearchAgent:
         top_k: int | None = None,
         max_hops: int | None = None,
         allow_external_arxiv: bool | None = None,
+        chat_history: list[ChatTurn] | None = None,
     ) -> AgenticAnswer:
         state = create_initial_state(
             query=query,
@@ -136,6 +142,7 @@ class ResearchAgent:
                 if allow_external_arxiv is not None
                 else self.allow_external_arxiv
             ),
+            chat_history=chat_history,
         )
         final_state = await self._graph.ainvoke(state)
 

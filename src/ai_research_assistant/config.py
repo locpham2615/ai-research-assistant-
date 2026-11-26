@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     agent_merged_top_k: int = 6
     agent_allow_external_arxiv: bool = False
     
+    chat_history_max_turns: int = 4
+    chat_history_max_chars: int = 1500
+    
 @lru_cache
 def get_settings() -> Settings:
     settings = Settings()

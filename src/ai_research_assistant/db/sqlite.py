@@ -1,10 +1,19 @@
 import json
 import re
 import time
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
+
+from ai_research_assistant.agent.memory import (
+    ChatMessage,
+    ChatRole,
+    ChatSession,
+    ChatTurn,
+)
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS topics (
@@ -94,7 +103,32 @@ CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
     INSERT INTO chunks_fts(rowid, title, section, text)
     VALUES (new.id, new.title, new.section, new.text);
 END;
+
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    session_id TEXT PRIMARY KEY,
+    topic_id TEXT,
+    title TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    message_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    citations_json TEXT NOT NULL DEFAULT '[]',
+    agent_trace_json TEXT,
+    is_grounded INTEGER,
+    abstain_reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES chat_sessions(session_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session_created
+    ON chat_messages(session_id, created_at);
 """
+
 _FTS5_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 
 
@@ -105,6 +139,7 @@ def build_fts5_query(query: str, max_tokens: int = 24) -> str:
     if not unique_tokens:
         return ""
     return " OR ".join(f'"{tok}"' for tok in unique_tokens)
+
 
 class SQLiteStore:
     def __init__(self, db_path: Path | str) -> None:
@@ -156,7 +191,12 @@ class SQLiteStore:
                 return None
             return json.loads(response_json)
 
-    async def set_api_cache(self, query_hash: str, payload: Any, ttl_seconds: int = 21600) -> None:
+    async def set_api_cache(
+        self,
+        query_hash: str,
+        payload: Any,
+        ttl_seconds: int = 21600,
+    ) -> None:
         expires_at = time.time() + ttl_seconds
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
@@ -291,7 +331,7 @@ class SQLiteStore:
             )
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
-    
+
     # --- Chunks & BM25 (FTS5) ---
     async def upsert_chunks(self, chunks: list[dict[str, Any]]) -> None:
         if not chunks:
@@ -394,3 +434,294 @@ class SQLiteStore:
             item["lexical_score"] = -raw_score
             results.append(item)
         return results
+
+    # --- Chat Sessions & Messages (Short-Term Session Memory) ---
+    async def create_session(
+        self,
+        topic_id: str | None = None,
+        title: str = "New Research Chat",
+        session_id: str | None = None,
+    ) -> ChatSession:
+        sid = session_id or uuid.uuid4().hex
+        cleaned_title = title.strip() or "New Research Chat"
+        now = datetime.now(UTC).isoformat()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO chat_sessions (session_id, topic_id, title, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (sid, topic_id, cleaned_title, now, now),
+            )
+            await db.commit()
+
+        return ChatSession(
+            session_id=sid,
+            topic_id=topic_id,
+            title=cleaned_title,
+            created_at=now,
+            updated_at=now,
+            message_count=0,
+        )
+
+    async def get_session(self, session_id: str) -> ChatSession | None:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT
+                    s.session_id,
+                    s.topic_id,
+                    s.title,
+                    s.created_at,
+                    s.updated_at,
+                    COUNT(m.message_id) AS message_count
+                FROM chat_sessions s
+                LEFT JOIN chat_messages m ON m.session_id = s.session_id
+                WHERE s.session_id = ?
+                GROUP BY s.session_id
+                """,
+                (session_id,),
+            )
+            row = await cursor.fetchone()
+
+        if row is None:
+            return None
+        return ChatSession(
+            session_id=str(row["session_id"]),
+            topic_id=str(row["topic_id"]) if row["topic_id"] is not None else None,
+            title=str(row["title"]),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+            message_count=int(row["message_count"]),
+        )
+
+    async def list_sessions(
+        self,
+        topic_id: str | None = None,
+        limit: int = 50,
+    ) -> list[ChatSession]:
+        if limit <= 0:
+            return []
+
+        params: list[Any] = []
+        where_clause = ""
+        if topic_id is not None:
+            where_clause = "WHERE s.topic_id = ?"
+            params.append(topic_id)
+        params.append(limit)
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                f"""
+                SELECT
+                    s.session_id,
+                    s.topic_id,
+                    s.title,
+                    s.created_at,
+                    s.updated_at,
+                    COUNT(m.message_id) AS message_count
+                FROM chat_sessions s
+                LEFT JOIN chat_messages m ON m.session_id = s.session_id
+                {where_clause}
+                GROUP BY s.session_id
+                ORDER BY s.updated_at DESC, s.rowid DESC
+                LIMIT ?
+                """,
+                params,
+            )
+            rows = await cursor.fetchall()
+
+        return [
+            ChatSession(
+                session_id=str(row["session_id"]),
+                topic_id=str(row["topic_id"]) if row["topic_id"] is not None else None,
+                title=str(row["title"]),
+                created_at=str(row["created_at"]),
+                updated_at=str(row["updated_at"]),
+                message_count=int(row["message_count"]),
+            )
+            for row in rows
+        ]
+
+    async def update_session_title(self, session_id: str, title: str) -> bool:
+        cleaned_title = title.strip()
+        if not cleaned_title:
+            raise ValueError("Session title must not be empty")
+        now = datetime.now(UTC).isoformat()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                UPDATE chat_sessions
+                SET title = ?, updated_at = ?
+                WHERE session_id = ?
+                """,
+                (cleaned_title, now, session_id),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def delete_session(self, session_id: str) -> bool:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("PRAGMA foreign_keys = ON")
+            cursor = await db.execute(
+                "DELETE FROM chat_sessions WHERE session_id = ?",
+                (session_id,),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def add_message(
+        self,
+        session_id: str,
+        role: ChatRole,
+        content: str,
+        citations: list[dict[str, Any]] | None = None,
+        agent_trace: dict[str, Any] | None = None,
+        is_grounded: bool | None = None,
+        abstain_reason: str = "",
+        message_id: str | None = None,
+    ) -> ChatMessage:
+        cleaned_content = content.strip()
+        if not cleaned_content:
+            raise ValueError("Message content must not be empty")
+
+        mid = message_id or uuid.uuid4().hex
+        now = datetime.now(UTC).isoformat()
+        citations_list = citations or []
+        citations_json = json.dumps(citations_list, ensure_ascii=False)
+        trace_json = (
+            json.dumps(agent_trace, ensure_ascii=False)
+            if agent_trace is not None
+            else None
+        )
+        grounded_int = None if is_grounded is None else int(is_grounded)
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("PRAGMA foreign_keys = ON")
+            exists_cur = await db.execute(
+                "SELECT 1 FROM chat_sessions WHERE session_id = ?",
+                (session_id,),
+            )
+            if await exists_cur.fetchone() is None:
+                raise ValueError(f"Chat session not found: {session_id}")
+
+            await db.execute(
+                """
+                INSERT INTO chat_messages (
+                    message_id, session_id, role, content,
+                    citations_json, agent_trace_json, is_grounded,
+                    abstain_reason, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    mid,
+                    session_id,
+                    role,
+                    cleaned_content,
+                    citations_json,
+                    trace_json,
+                    grounded_int,
+                    abstain_reason,
+                    now,
+                ),
+            )
+            await db.execute(
+                "UPDATE chat_sessions SET updated_at = ? WHERE session_id = ?",
+                (now, session_id),
+            )
+            await db.commit()
+
+        return ChatMessage(
+            message_id=mid,
+            session_id=session_id,
+            role=role,
+            content=cleaned_content,
+            citations=citations_list,
+            agent_trace=agent_trace,
+            is_grounded=is_grounded,
+            abstain_reason=abstain_reason,
+            created_at=now,
+        )
+
+    async def get_session_messages(
+        self,
+        session_id: str,
+        limit: int | None = None,
+    ) -> list[ChatMessage]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            if limit is not None and limit > 0:
+                cursor = await db.execute(
+                    """
+                    SELECT * FROM (
+                        SELECT
+                            rowid AS seq_id,
+                            message_id, session_id, role, content,
+                            citations_json, agent_trace_json, is_grounded,
+                            abstain_reason, created_at
+                        FROM chat_messages
+                        WHERE session_id = ?
+                        ORDER BY created_at DESC, rowid DESC
+                        LIMIT ?
+                    ) sub
+                    ORDER BY created_at ASC, seq_id ASC
+                    """,
+                    (session_id, limit),
+                )
+            else:
+                cursor = await db.execute(
+                    """
+                    SELECT
+                        message_id, session_id, role, content,
+                        citations_json, agent_trace_json, is_grounded,
+                        abstain_reason, created_at
+                    FROM chat_messages
+                    WHERE session_id = ?
+                    ORDER BY created_at ASC, rowid ASC
+                    """,
+                    (session_id,),
+                )
+            rows = await cursor.fetchall()
+
+        messages: list[ChatMessage] = []
+        for row in rows:
+            raw_citations = json.loads(row["citations_json"]) if row["citations_json"] else []
+            raw_trace = (
+                json.loads(row["agent_trace_json"])
+                if row["agent_trace_json"] is not None
+                else None
+            )
+            raw_grounded = row["is_grounded"]
+            role: ChatRole = "user" if str(row["role"]) == "user" else "assistant"
+            messages.append(
+                ChatMessage(
+                    message_id=str(row["message_id"]),
+                    session_id=str(row["session_id"]),
+                    role=role,
+                    content=str(row["content"]),
+                    citations=raw_citations,
+                    agent_trace=raw_trace,
+                    is_grounded=None if raw_grounded is None else bool(raw_grounded),
+                    abstain_reason=str(row["abstain_reason"] or ""),
+                    created_at=str(row["created_at"]),
+                )
+            )
+        return messages
+
+    async def get_recent_chat_turns(
+        self,
+        session_id: str,
+        max_turns: int = 4,
+    ) -> list[ChatTurn]:
+        if max_turns <= 0:
+            return []
+        messages = await self.get_session_messages(
+            session_id=session_id,
+            limit=max_turns * 2,
+        )
+        return [ChatTurn(role=m.role, content=m.content) for m in messages]
