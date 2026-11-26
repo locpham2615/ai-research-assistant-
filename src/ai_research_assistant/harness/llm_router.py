@@ -39,6 +39,9 @@ class TaskType(StrEnum):
     RAG_ANSWER = "rag_answer"
     EVAL_JUDGE = "eval_judge"
 
+    AGENT_PLAN = "agent_plan"
+    AGENT_GRADE = "agent_grade"
+
 LOCAL_TASKS: frozenset[TaskType] = frozenset(
     {
         TaskType.SCREENING,
@@ -46,7 +49,8 @@ LOCAL_TASKS: frozenset[TaskType] = frozenset(
         TaskType.RAG_ANSWER,
         TaskType.EXTRACT_CARD,
         TaskType.COMPACTION,
-
+        TaskType.AGENT_PLAN,
+        TaskType.AGENT_GRADE
     }
 )
 
