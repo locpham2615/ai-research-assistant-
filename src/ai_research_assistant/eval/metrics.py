@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from ai_research_assistant.eval.dataset import normalize_doc_id
 from ai_research_assistant.eval.schemas import (
     AbstentionMetrics,
+    AgentEvalSummary,
     CategorySummary,
     CitationMetrics,
     EvalReport,
@@ -267,6 +268,20 @@ def aggregate_eval_results(
             mean_relevancy=sum(j.relevancy for j in judged) / len(judged),
         )
 
+    agent_items = [r for r in results if r.agent_hops is not None]
+    agent_summary: AgentEvalSummary | None = None
+    if agent_items:
+        agent_summary = AgentEvalSummary(
+            simple_count=sum(1 for r in agent_items if r.agent_route == "simple"),
+            decompose_count=sum(1 for r in agent_items if r.agent_route == "decompose"),
+            fast_path_count=sum(1 for r in agent_items if r.agent_used_fast_path),
+            multi_hop_count=sum(1 for r in agent_items if (r.agent_hops or 0) > 1),
+            avg_hops=sum(r.agent_hops or 0 for r in agent_items) / len(agent_items),
+            avg_llm_calls=(
+                sum(r.agent_llm_calls or 0 for r in agent_items) / len(agent_items)
+            ),
+        )
+
     grouped: dict[str, list[SampleEvalResult]] = defaultdict(list)
     for r in results:
         grouped[r.category].append(r)
@@ -306,6 +321,7 @@ def aggregate_eval_results(
         abstention=compute_abstention_metrics(results),
         latency=compute_latency_summary(results),
         judge=judge_summary,
+        agent=agent_summary,
         by_category=by_category,
         results=results,
     )

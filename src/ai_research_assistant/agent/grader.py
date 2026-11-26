@@ -17,6 +17,7 @@ from ai_research_assistant.retrieval.schemas import RetrievedChunk
 logger = logging.getLogger(__name__)
 
 _WHITESPACE_RE = re.compile(r"\s+")
+_ARXIV_VERSION_RE = re.compile(r"v\d+$", re.IGNORECASE)
 
 _GRADER_SYSTEM_PROMPT = (
     "You are an academic research evidence grader for a multi-hop RAG system.\n"
@@ -44,6 +45,10 @@ class GradeDecision(BaseModel):
 
 def _norm_query(text: str) -> str:
     return _WHITESPACE_RE.sub(" ", text.strip().lower())
+
+
+def _normalize_doc_id(doc_id: str) -> str:
+    return _ARXIV_VERSION_RE.sub("", doc_id.strip())
 
 
 def _format_evidence_preview(chunks: list[RetrievedChunk], max_chars: int) -> str:
@@ -102,7 +107,7 @@ class EvidenceGrader:
     def __init__(
         self,
         schema_guard: SchemaGuard,
-        fast_path_min_score: float = 2.0,
+        fast_path_min_score: float = 1.0,
         fast_path_min_chunks: int = 2,
         max_evidence_chars: int = 3500,
     ) -> None:
@@ -120,14 +125,17 @@ class EvidenceGrader:
         route: AgentRoute,
         chunks: list[RetrievedChunk],
     ) -> bool:
-        if route != "simple":
-            return False
-        strong_hits = sum(
-            1
+        strong_chunks = [
+            c
             for c in chunks
             if c.rerank_score is not None and c.rerank_score >= self.fast_path_min_score
-        )
-        return strong_hits >= self.fast_path_min_chunks
+        ]
+        if route == "simple":
+            return len(strong_chunks) >= self.fast_path_min_chunks
+
+        # Với decompose: chỉ cho đi Fast-Path khi đã phủ đủ >= 2 bài báo khác nhau có điểm cao
+        distinct_strong_docs = {_normalize_doc_id(c.doc_id) for c in strong_chunks}
+        return len(distinct_strong_docs) >= 2
 
     async def grade(
         self,
@@ -172,13 +180,13 @@ class EvidenceGrader:
                 ),
             )
 
-        # Chốt 3: Fast-Path cho câu hỏi đơn có ít nhất N đoạn điểm rerank cao
+        # Chốt 3: Fast-Path khi bằng chứng đã đủ mạnh và cân bằng nguồn
         if self._qualifies_fast_path(route, evidence_chunks):
             return GradeDecision(
                 next_action="synthesize",
                 grade=EvidenceGrade(
                     is_sufficient=True,
-                    rationale="Fast-path: strong rerank scores on simple query.",
+                    rationale=f"Fast-path: strong rerank scores on {route} query.",
                 ),
                 used_fast_path=True,
             )

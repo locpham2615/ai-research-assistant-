@@ -117,6 +117,29 @@ def render_markdown_report(
                 f"| {_fmt_score(rep.judge.mean_relevancy)} |"
             )
 
+    agent_reports = [r for r in reports if r.agent is not None]
+    if agent_reports:
+        lines.extend(
+            [
+                "",
+                "## Agentic Workflow Summary",
+                "",
+                (
+                    "| Mode | Simple | Decompose | Fast-Path | Multi-Hop (>1) | "
+                    "Avg Hops | Avg LLM Calls |"
+                ),
+                "| :--- | :---: | :---: | :---: | :---: | :---: | :---: |",
+            ]
+        )
+        for rep in agent_reports:
+            assert rep.agent is not None
+            ag = rep.agent
+            lines.append(
+                f"| `{rep.mode}` | {ag.simple_count} | {ag.decompose_count} "
+                f"| {ag.fast_path_count} | {ag.multi_hop_count} "
+                f"| {ag.avg_hops:.2f} | {ag.avg_llm_calls:.2f} |"
+            )
+
     lines.extend(
         [
             "",

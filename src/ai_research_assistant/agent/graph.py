@@ -39,8 +39,11 @@ _AGENT_SYNTHESIS_PROMPT = (
     "3. When comparing multiple papers or methods, cover each side explicitly "
     "and attach inline citations like [1] or [1, 2] to every factual claim.\n"
     "4. Never cite a number that is not present in the provided sources.\n"
-    "5. If the sources do not contain enough evidence to answer the question, "
-    "set is_sufficient_evidence to false and state the gap in abstain_reason.\n"
+    "5. STRICT ABSTENTION: If the question asks about a specific model, paper, "
+    "dataset, benchmark, metric, or premise that is NOT explicitly present in "
+    "the provided sources (even if related papers appear), you MUST set "
+    "is_sufficient_evidence to false and explain the exact missing premise in "
+    "abstain_reason. Never extrapolate or answer a different question.\n"
     "Return valid JSON matching the requested schema."
 )
 

@@ -47,7 +47,7 @@ class Settings(BaseSettings):
 
     agent_max_hops: int = 2
     agent_max_sub_queries: int = 3
-    agent_fast_path_min_score: float = 2.0
+    agent_fast_path_min_score: float = 1.0
     agent_fast_path_min_chunks: int = 2
     agent_merged_top_k: int = 6
     agent_allow_external_arxiv: bool = False

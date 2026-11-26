@@ -7,23 +7,22 @@ from ai_research_assistant.harness.schema_guard import SchemaGuard
 logger = logging.getLogger(__name__)
 
 _PLANNER_SYSTEM_PROMPT = (
-    "You are an academic research query planner for a local paper repository.\n"
-    "Analyze the user's question (which may be in Vietnamese or English) and build "
-    "an optimal retrieval plan.\n"
+    "You are a strict academic research query planner for a local paper repository.\n"
+    "Analyze the user's question (Vietnamese or English) and build a compact retrieval plan.\n"
     "Rules:\n"
-    "1. Translate and normalize every search_query into crisp academic English.\n"
-    "2. Use route='simple' (exactly 1 sub-query) for single-paper, single-concept, "
-    "or straightforward factoid questions.\n"
-    "3. Use route='decompose' (2 to 3 independent sub-queries) ONLY when the "
-    "question compares/synthesizes multiple papers or methods (e.g., LoRA vs QLoRA, "
-    "Self-RAG vs GraphRAG, vLLM in Self-RAG) or asks multiple distinct aspects "
-    "that require separate evidence.\n"
-    "4. Each sub-query must target ONE specific paper, method, or aspect with:\n"
-    "   - search_query: focused English query.\n"
-    "   - bm25_keywords: 3 to 6 exact technical terms, acronyms, symbols, or "
-    "method names.\n"
-    "   - target_aspect: short label of the fact this sub-query must retrieve.\n"
-    "5. Do not answer the question. Return valid JSON matching the schema."
+    "1. DEFAULT to route='simple' (EXACTLY 1 sub-query). Even if the question asks "
+    "multiple facts, numbers, steps, or causes about ONE paper/method/system, you MUST "
+    "keep route='simple' with 1 sub-query.\n"
+    "2. Use route='decompose' (2 sub-queries; 3 ONLY if 3 distinct papers are named) "
+    "STRICTLY when the question explicitly compares, contrasts, or connects TWO OR MORE "
+    "distinct papers/methods/systems (e.g., LoRA vs QLoRA, Self-RAG vs RAG, "
+    "Self-RAG with vLLM, ReAct vs Toolformer, Self-RAG vs GraphRAG).\n"
+    "3. Translate every search_query into crisp academic English and keep all exact "
+    "entity names, model names, and numbers intact (never drop an entity to make a "
+    "query easier to match).\n"
+    "4. Each sub-query must have 3 to 6 exact technical bm25_keywords and a short "
+    "target_aspect (max 6 words).\n"
+    "5. Keep reasoning under 15 words. Return valid JSON matching the schema."
 )
 
 
