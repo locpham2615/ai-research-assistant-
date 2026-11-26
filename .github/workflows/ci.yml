@@ -8,11 +8,15 @@ on:
 
 jobs:
   quality-and-tests:
+    name: Backend Quality & Unit Tests
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Validate Docker Compose syntax
+        run: docker compose config --quiet
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -23,10 +27,40 @@ jobs:
         run: uv sync --frozen --dev
 
       - name: Lint with Ruff
-        run: uv run ruff check src tests
+        run: uv run ruff check src tests scripts
 
       - name: Type check with Mypy
         run: uv run mypy src
 
       - name: Run Unit Tests (CPU / Mock only)
         run: uv run pytest -m "not gpu" -v
+
+  frontend:
+    name: Frontend Lint, Typecheck & Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint
+        run: npm run lint
+
+      - name: Run TypeScript compiler check
+        run: npx tsc --noEmit
+
+      - name: Build Next.js standalone production bundle
+        run: npm run build

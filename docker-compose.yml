@@ -1,0 +1,68 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: research_assistant_qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    environment:
+      - QDRANT__LOG_LEVEL=INFO
+
+  grobid:
+    image: lfoppiano/grobid:0.8.1
+    container_name: research_assistant_grobid
+    restart: unless-stopped
+    ports:
+      - "8070:8070"
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: research_assistant_backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      APP_ENV: production
+      SQLITE_DB_PATH: /app/data/research_assistant.db
+      UPLOAD_DIR: /app/data/uploads
+      ARXIV_DOWNLOAD_DIR: /app/data/pdfs
+      QDRANT_URL: http://qdrant:6333
+      GROBID_URL: http://grobid:8070
+      LOCAL_LLM_BASE_URL: http://host.docker.internal:8080/v1
+      API_CORS_ORIGINS: '["http://localhost:3000","http://127.0.0.1:3000"]'
+    volumes:
+      - ./data:/app/data
+      - model_cache:/cache
+    depends_on:
+      - qdrant
+      - grobid
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    container_name: research_assistant_frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  # Preserves existing indexed vectors created earlier under docker/docker-compose.yml
+  # while still auto-creating cleanly on fresh clones.
+  qdrant_storage:
+    name: ${QDRANT_VOLUME_NAME:-docker_qdrant_storage}
+  model_cache:

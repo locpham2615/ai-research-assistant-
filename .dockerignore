@@ -1,0 +1,39 @@
+# Version control & CI
+.git
+.gitignore
+.github
+
+# Virtual environments & caches
+.venv
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+build/
+dist/
+wheels/
+*.egg-info/
+
+# Frontend & non-backend directories
+frontend/
+data/
+reports/
+evals/
+tests/
+scripts/
+docker/
+.vscode/
+
+# Secrets & local databases
+.env
+.env.*
+*.db
+*.sqlite
+*.sqlite3
+
+# Markdown docs (keep README.md required by uv_build in pyproject.toml)
+*.md
+!README.md
