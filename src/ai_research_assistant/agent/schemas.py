@@ -2,7 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from ai_research_assistant.retrieval.schemas import GroundedAnswer
+from ai_research_assistant.retrieval.schemas import GroundedAnswer, RetrievedChunk
 
 AgentRoute = Literal["simple", "decompose"]
 AgentNextAction = Literal["synthesize", "refine", "arxiv_discovery", "abstain"]
@@ -93,7 +93,7 @@ class AgentExecutionTrace(BaseModel):
     grades: list[EvidenceGrade] = Field(default_factory=list)
     steps: list[AgentStepTrace] = Field(default_factory=list)
 
-
 class AgenticAnswer(BaseModel):
     grounded_answer: GroundedAnswer
     agent_trace: AgentExecutionTrace = Field(default_factory=AgentExecutionTrace)
+    pre_rerank_chunks: list[RetrievedChunk] = Field(default_factory=list)
